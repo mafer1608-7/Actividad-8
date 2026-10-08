@@ -1,6 +1,0 @@
-FROM alpine:3.20
-# FRR es opcional (bonus: enrutamiento dinámico). Con ip_forward + iptables ya se cumple el requisito.
-RUN apk add --no-cache iptables iproute2 iproute2-tc
-COPY services/router/router.sh /router.sh
-RUN chmod +x /router.sh
-ENTRYPOINT ["/router.sh"]
