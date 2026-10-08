@@ -133,16 +133,6 @@ Si la esclava no recibe un estado de un contenedor en 5 s, lo considera `DOWN`. 
 
 Cada VLAN es una **red bridge de Docker** independiente, con su propia subred y su propio dominio de broadcast. Como alternativa, pueden crearse VLAN 802.1Q reales con redes `macvlan` sobre subinterfaces (`eth0.10`, `eth0.20`, `eth0.30`); no es la configuración por defecto.
 
-### 2.4 Evidencias
-
-_Agregar aquí las capturas y videos:_
-
-- **Panel del plano de administración con los 7 contenedores en `UP`:** _captura_
-- **Panel con un contenedor en `DEGRADED` o `DOWN` (experimentos E2 y E4):** _captura_
-- **Prueba de aislamiento (ping bloqueado entre VLAN 1 y VLAN 2):** _captura_
-- **Video del funcionamiento:** no se incluye video con hardware real, porque no se dispuso de las ESP32 físicas.
-
----
 
 ## 3. El plano de administración: cómo se mide la red
 
