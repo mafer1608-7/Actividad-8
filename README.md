@@ -431,10 +431,10 @@ iptables -A FORWARD -s 192.168.10.0/24 -d 192.168.30.10 -p tcp --dport 1883 -j A
 
 | Problema | Causa y solución |
 |---|---|
-| `Pool overlaps with other one` | Tu red local usa las mismas subredes: cambiarlas en la configuración de Docker, del router y del administrador |
+| `Pool overlaps with other one` | La red local usada tiene las mismas subredes: cambiarlas en la configuración de Docker, del router y del administrador |
 | Todos en `DOWN` al iniciar | El administrador necesita unos 5 s para medir; esperar |
 | `DEGRADED` con `sin-metricas` | Fallan las rutas o las reglas del router: revisar `docker exec router iptables -L FORWARD -nv` |
-| `docker` no se reconoce | Docker Desktop no está abierto o instalado; esperar a "Engine running" |
+| `docker` no se reconoce | Docker Desktop no está abierto; esperar a "Engine running" |
 | La ESP32 no llega al contenedor | IP del PC incorrecta o firewall de Windows: abrir los puertos UDP y probar antes con las ESP32 virtuales |
 | `iptables` falla en el router | El kernel del equipo no tiene `nf_conntrack`: usar `iptables-legacy` en el router |
 | El coche gira o avanza al revés | El signo depende del modelo: invertirlo en la aplicación de los controles |
