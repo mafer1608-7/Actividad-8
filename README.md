@@ -1,226 +1,107 @@
-# Actividad 8 — Zonas virtualizadas de simulación físico-robótica controladas por ESP32 con plano de administración de red
+# Zonas virtualizadas de simulación físico-robótica controladas por ESP32 con plano de administración de red
 
-**Autores:** María Fernanda Peñuela Romero · Alix Estefania Maldonado Roa · Juan David Artunduaga Diaz
-**Curso:** Micros y laboratorio · **Fecha:** 7 de octubre de 2026
-**Repositorio:** https://github.com/mafer1608-7/Actividad-8 · **Docker Hub:** https://hub.docker.com/u/mafepr08
+**Trabajo en grupo — Actividad 8, Micros y laboratorio**
 
-Este repositorio contiene el desarrollo de la Actividad 8: un laboratorio con **ESP32, PyBullet, Docker, VLANs y MQTT** compuesto por tres redes aisladas y un router inter-VLAN.
+**Autores:** Alix Estefania Maldonado Roa · Juan David Artunduaga Diaz · María Fernanda Peñuela Romero
+**Repositorio:** https://github.com/mafer1608-7/Actividad-8 · **Fecha:** 7 de octubre de 2026
 
-| Red | Tema | Hardware principal | Software |
+Un conjunto de ESP32 controla en tiempo real dos zonas de simulación física que corren en **contenedores Docker** y están aisladas entre sí en **VLANs**: una zona de **carreras multijugador** y una zona de **robótica** (Spot, Pepper y NAO). Un tercer segmento, el **plano de administración**, mide la latencia, el jitter y la disponibilidad de cada contenedor, y una ESP32 esclava muestra el estado de cada uno con **LEDs**. Un **router inter-VLAN** deja que el plano de administración observe ambas zonas sin romper su aislamiento. Todo sigue un patrón **maestro–esclavo** entre los dispositivos embebidos.
+
+| Parte | Qué hace | Hardware | Software |
 |---|---|---|---|
-| **VLAN 1** | Zona Gamer Multijugador (carreras) | 3 × ESP32 maestras, potenciómetros | PyBullet + WebSocket (Docker) |
-| **VLAN 2** | Zona de Simulación Robótica (Spot, Pepper, NAO) | 3 × ESP32 maestras, potenciómetros | PyBullet real-to-sim (Docker) |
-| **VLAN 3** | Plano de administración de red | 1 × ESP32 esclava, 7 LEDs | Alpine + Mosquitto + monitor (Docker) |
-| **Router** | Enrutamiento inter-VLAN con aislamiento | — | Alpine + iptables (Docker) |
+| **VLAN 1 — Zona Gamer** | Servidor de pista con 3 coches y 3 clientes, cada uno controlado por una ESP32 maestra | 3 ESP32 con potenciómetros | PyBullet + WebSocket, en Docker |
+| **VLAN 2 — Zona Robótica** | Spot, Pepper y NAO en contenedores independientes, cada uno movido por su ESP32 maestra (*real-to-sim*) | 3 ESP32 con potenciómetros | PyBullet, en Docker |
+| **VLAN 3 — Administración** | Mide latencia, jitter, pérdida y disponibilidad; publica el estado de cada contenedor; panel web | 1 ESP32 esclava con 7 LEDs | Alpine + Mosquitto + monitor propio, en Docker |
+| **Router inter-VLAN** | Une las 3 redes y solo deja pasar el tráfico necesario | — | Alpine + iptables, en Docker |
+
+**Estado de la validación** (detalle en la [sección 7](#7-resultados)):
+
+| | Estado |
+|---|---|
+| Lógica de clasificación `UP` / `DEGRADED` / `DOWN` | Comprobada con pruebas locales: RTT bajo → `UP`, RTT de 120 ms → `DEGRADED`, sin ping ni métricas → `DOWN` |
+| Estimador de jitter | Comprobado con 50 paquetes enviados cada ~25 ms con retardo aleatorio de hasta 10 ms: 0 pérdidas y jitter estimado de 4.9 ms |
+| Sistema completo en Docker (aislamiento, latencia, jitter, disponibilidad) | Procedimiento y resultados esperados definidos; mediciones pendientes de ejecutar |
+| Firmware en ESP32 físicas | Escrito, pero no probado físicamente (no se dispuso de las placas); se valida con ESP32 virtuales |
 
 ---
 
 ## Contenido
 
-- [Descripción general](#descripción-general)
-- [Objetivos](#objetivos)
-- [Arquitectura del sistema](#arquitectura-del-sistema)
-- [VLAN 1 — Zona Gamer Multijugador](#vlan-1--zona-gamer-multijugador)
-- [VLAN 2 — Zona de Simulación Robótica](#vlan-2--zona-de-simulación-robótica)
-- [VLAN 3 — Plano de administración](#vlan-3--plano-de-administración)
-- [Router inter-VLAN](#router-inter-vlan)
-- [Hardware utilizado](#hardware-utilizado)
-- [Software utilizado](#software-utilizado)
-- [Funcionamiento del sistema](#funcionamiento-del-sistema)
-- [Ejecución](#ejecución)
-- [Validación experimental](#validación-experimental)
-- [Imágenes en Docker Hub](#imágenes-en-docker-hub)
-- [Organización del repositorio](#organización-del-repositorio)
-- [Requisitos generales](#requisitos-generales)
-- [Solución de problemas](#solución-de-problemas)
-- [Evidencias](#evidencias)
-- [Conclusiones](#conclusiones)
+1. [Arquitectura general](#1-arquitectura-general)
+2. [Las zonas: qué hacen y cómo se ven](#2-las-zonas-qué-hacen-y-cómo-se-ven)
+3. [El plano de administración: cómo se mide la red](#3-el-plano-de-administración-cómo-se-mide-la-red)
+4. [Red y protocolos de comunicación](#4-red-y-protocolos-de-comunicación)
+5. [Simulaciones en PyBullet y Docker](#5-simulaciones-en-pybullet-y-docker)
+6. [Análisis](#6-análisis)
+7. [Resultados](#7-resultados)
+8. [Materiales y software](#8-materiales-y-software)
+9. [Explicación del código](#9-explicación-del-código)
+10. [Problemas comunes y soluciones](#10-problemas-comunes-y-soluciones)
+11. [Conclusiones](#11-conclusiones)
+12. [Referencias](#12-referencias)
 
 ---
 
-# Descripción general
+## 1. Arquitectura general
 
-En el desarrollo de sistemas embebidos modernos, los microcontroladores ya no operan de forma aislada: se integran con infraestructura virtualizada, redes segmentadas y simuladores físicos que replican el comportamiento de sistemas reales.
+Las **ESP32 maestras** generan las órdenes de control; los **contenedores** simulan la física; el **plano de administración** observa, mide y decide el estado de cada contenedor; la **ESP32 esclava** lo muestra con LEDs. El PC con Docker aloja las tres redes y el router.
 
-En esta actividad se construyó un laboratorio con dos zonas de simulación aisladas entre sí (una de carreras multijugador y una de robótica), un plano de administración que mide el desempeño de la red y un mecanismo de señalización física mediante LEDs que refleja en tiempo real el estado de cada contenedor. Se sigue un patrón **maestro–esclavo** entre los dispositivos embebidos:
-
-- Las **ESP32 maestras** leen potenciómetros y controlan en tiempo real cada simulación (los robots siguen el movimiento físico, paradigma *real-to-sim*).
-- La **ESP32 esclava** recibe el estado de los contenedores por MQTT y lo muestra con LEDs.
-
-El proyecto integra:
-
-- Contenedores Docker con redes segmentadas (VLANs).
-- Simulación física con PyBullet (pista de carros y tres robots).
-- Programación de ESP32 con Arduino/PlatformIO.
-- Comunicación UDP entre ESP32 y contenedores, WebSocket entre contenedores y MQTT para telemetría.
-- Medición de latencia, jitter y disponibilidad en un plano de administración independiente.
-- Router inter-VLAN con reglas `iptables`.
-
-# Objetivos
-
-**Objetivo general.** Diseñar e implementar una arquitectura distribuida basada en contenedores Docker, segmentada en VLANs, donde múltiples microcontroladores ESP32 actúan como dispositivos de control en tiempo real sobre simulaciones físicas desarrolladas en PyBullet, y donde un plano de administración independiente mide el jitter, la latencia y el estado de cada zona, reflejando la actividad de los contenedores mediante indicadores LED controlados por una ESP32 esclava.
-
-| # | Objetivo específico | Dónde se cumple |
-|---|---|---|
-| 1 | VLAN 1 (Gamer): servidor de pista PyBullet y tres clientes, cada uno controlado por una ESP32 maestra | `services/track_server`, `services/player`, `firmware/src/ctrl` |
-| 2 | VLAN 2 (Robótica): Spot, Pepper y NAO en PyBullet, cada uno con su ESP32 maestra (*real-to-sim*) | `services/robot_sim`, `firmware/src/ctrl` |
-| 3 | VLAN 3 (Administración): contenedor Alpine de monitoreo, broker MQTT y ESP32 esclava con LEDs | `services/admin`, `firmware/src/led_monitor` |
-| 4 | Router inter-VLAN que permita al plano de administración observar ambas zonas sin romper su aislamiento | `services/router`, `tests/test_isolation.sh` |
-| 5 | Validar experimentalmente la red mediante métricas de jitter, latencia y disponibilidad | `tools/`, sección [Validación experimental](#validación-experimental) |
-
----
-
-# Arquitectura del sistema
-
-```text
-  ┌───────────────────────── VLAN 1 · Gamer 192.168.10.0/24 ─────────────────────────┐
-  │  ESP32 ctrl-1/2/3 ──UDP──► player-1/2/3 ──WebSocket──► track-server (PyBullet)   │
-  └───────────────────────────────────────┬──────────────────────────────────────────┘
-                                          │
-                                   ┌──────┴──────┐
-                                   │   ROUTER    │   ip_forward + iptables
-                                   │ .254 / VLAN │   VLAN1 ✗ VLAN2 (aislados)
-                                   └──────┬──────┘
-                                          │
-  ┌───────────────────────── VLAN 2 · Robótica 192.168.20.0/24 ──────────────────────┐
-  │  ESP32 ctrl-nao/spot/pepper ──UDP──► sim-nao · sim-spot · sim-pepper (PyBullet)  │
-  └───────────────────────────────────────┬──────────────────────────────────────────┘
-                          MQTT metrics + heartbeat UDP (solo estos puertos)
-                                          │
-  ┌───────────────────────── VLAN 3 · Administración 192.168.30.0/24 ───────────────┐
-  │  admin (Alpine + Mosquitto + monitor)  ──MQTT lab/status/#──► ESP32 esclava      │
-  │  mide latencia · jitter · disponibilidad                       7 LEDs            │
-  └──────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph V1["VLAN 1 · Zona Gamer · 192.168.10.0/24"]
+        direction LR
+        E1["ESP32 ctrl-1/2/3<br/>potenciómetros"] -- "UDP CMD 50 Hz" --> P["player-1/2/3"]
+        P -- "WebSocket" --> TS["track-server<br/>PyBullet"]
+    end
+    subgraph V2["VLAN 2 · Zona Robótica · 192.168.20.0/24"]
+        direction LR
+        E2["ESP32 ctrl-nao/spot/pepper<br/>potenciómetros"] -- "UDP CMD 50 Hz" --> S["sim-nao · sim-spot · sim-pepper<br/>PyBullet"]
+    end
+    R{{"Router inter-VLAN<br/>.254 en cada red<br/>ip_forward + iptables"}}
+    subgraph V3["VLAN 3 · Administración · 192.168.30.0/24"]
+        direction LR
+        A["admin<br/>Alpine + Mosquitto + monitor"] -- "MQTT lab/status/#" --> L["ESP32 esclava<br/>7 LEDs"]
+    end
+    P & TS & S -- "MQTT metrics" --> R
+    R -- "solo MQTT 1883 y UDP 9999" --> A
+    A -- "ICMP ping" --> R
+    E1 & E2 -. "heartbeat UDP 9999" .-> A
+    V1 x--x|"BLOQUEADO"| V2
 ```
 
-La arquitectura es la sugerida en el enunciado, con dos decisiones propias: se usan **7 LEDs** (uno por contenedor monitoreado: track-server, 3 players y 3 robots) y el broker MQTT corre dentro del contenedor `admin`.
-
-## Direccionamiento
-
-| Red | Subred | Contenedores | Puertos publicados en el host |
-|---|---|---|---|
-| VLAN 1 Gamer | 192.168.10.0/24 | track-server `.10`, player-1 `.11`, player-2 `.12`, player-3 `.13`, router `.254` | UDP 5001 / 5002 / 5003 |
-| VLAN 2 Robótica | 192.168.20.0/24 | sim-nao `.11`, sim-spot `.12`, sim-pepper `.13`, router `.254` | UDP 5011 / 5012 / 5013 |
-| VLAN 3 Admin | 192.168.30.0/24 | admin `.10`, router `.254` | TCP 1883 (MQTT), UDP 9999 (heartbeat), TCP 8080 (dashboard) |
-
-Cada VLAN se implementa como una **red bridge de Docker** independiente, con su propia subred y dominio de broadcast. Existe además la variante con VLAN 802.1Q reales usando redes `macvlan` (`parent: eth0.10`, `eth0.20`, `eth0.30`), que no es la configuración por defecto.
+Cada zona es autónoma: si el plano de administración se apaga, las simulaciones siguen funcionando; solo se pierde la medición y la señalización. Si un contenedor cae, el administrador lo detecta en pocos segundos y su LED se apaga.
 
 ---
 
-# VLAN 1 — Zona Gamer Multijugador
+## 2. Las zonas: qué hacen y cómo se ven
 
-## Descripción
+### 2.1 Qué hace cada zona
 
-Zona de carreras multijugador. Un servidor de pista PyBullet recibe las órdenes de tres clientes; cada cliente es controlado por una ESP32 maestra.
+**VLAN 1 — Zona Gamer Multijugador**
 
-## Componentes
+1. Cada ESP32 maestra lee tres potenciómetros y envía por UDP un paquete de control a 50 Hz a su contenedor `player`.
+2. El `player` convierte el primer valor en **dirección** (el centro es recto) y el segundo en **acelerador**, y lo reenvía por WebSocket al `track-server`.
+3. El `track-server` simula en PyBullet una pista elíptica con **3 coches**. Cada `player` puede configurar el **color** y el **estilo** de su coche (`sport`, `classic` o `drift`, que cambian la ganancia de velocidad).
+4. Si una ESP32 deja de enviar más de 1 s, su coche pasa a **piloto automático** y sigue la pista por waypoints: son los "carros autónomos" del servidor.
 
-| Contenedor | IP | Función |
-|---|---|---|
-| `track-server` | 192.168.10.10 | PyBullet headless con pista elíptica y 3 coches (`racecar.urdf`). API WebSocket |
-| `player-1/2/3` | 192.168.10.11-13 | Reciben UDP de su ESP32 y lo reenvían al servidor. Color y estilo configurables |
+**VLAN 2 — Zona de Simulación Robótica**
 
-## Funcionamiento
+1. Cada robot (Spot, Pepper y NAO) vive en su propio contenedor, con su propio simulador PyBullet.
+2. Cada ESP32 maestra envía tres valores analógicos (0 a 4095). El simulador los asigna a **tres grupos de articulaciones** del robot y fija su posición objetivo entre los límites de cada articulación.
+3. Es el paradigma ***real-to-sim***: al girar un potenciómetro real, el robot simulado se mueve de forma equivalente.
 
-1. La ESP32 maestra envía por UDP `CMD,<id>,<seq>,<ms>,<v1>,<v2>,<v3>` a 50 Hz.
-2. El `player` convierte `v1` en dirección (el centro es recto) y `v2` en acelerador.
-3. El `player` reenvía por WebSocket `{player, steer, throttle, color, style, gain}` al `track-server`.
-4. Si un jugador deja de enviar durante más de 1 s, su coche pasa a **piloto automático** (seguimiento de waypoints de la pista).
+**VLAN 3 — Plano de administración**
 
-Estilos de conducción (`CAR_STYLE`): `sport` (ganancia 1.0), `classic` (0.7) y `drift` (1.2). El color se define con `CAR_COLOR` (RGB entre 0 y 1).
+1. El contenedor `admin` hace ping a los 7 contenedores cada segundo y escucha sus métricas por MQTT y los heartbeats de las ESP32 maestras.
+2. Con eso calcula latencia, jitter, pérdida y disponibilidad, clasifica cada contenedor y publica su estado.
+3. La **ESP32 esclava** está suscrita a esos estados y enciende, hace parpadear o apaga el LED de cada contenedor.
+4. El `admin` guarda cada muestra en un archivo CSV y ofrece un **panel web** en `http://localhost:8080`.
 
-# VLAN 2 — Zona de Simulación Robótica
+**Router inter-VLAN.** Es el único punto de paso entre redes. Aplica una política de "todo bloqueado, salvo lo necesario" (sección 4.3).
 
-## Descripción
+### 2.2 Indicadores LED de la ESP32 esclava
 
-Tres contenedores independientes (Spot, Pepper y NAO) en PyBullet, cada uno controlado por su propia ESP32 maestra bajo el paradigma *real-to-sim*.
-
-## Componentes
-
-| Contenedor | IP | Robot | Modelo por defecto |
-|---|---|---|---|
-| `sim-spot` | 192.168.20.12 | Cuadrúpedo | `a1/a1.urdf` (pybullet_data) |
-| `sim-nao` | 192.168.20.11 | Humanoide pequeño | `humanoid/humanoid.urdf` escalado |
-| `sim-pepper` | 192.168.20.13 | Humanoide grande | `humanoid/humanoid.urdf` escalado |
-
-## Funcionamiento
-
-Los tres valores analógicos de la ESP32 (0–4095) se asignan a **tres grupos de articulaciones** del robot; cada valor define la posición objetivo entre los límites de sus articulaciones. Al girar un potenciómetro real, el robot simulado se mueve de forma equivalente.
-
-Para usar los modelos de los repositorios de referencia, se clonan en `./models/`, se descomenta el volumen `./models:/models:ro` en `docker-compose.yml` y se define `URDF=/models/<ruta>/robot.urdf` (opcionalmente `BASE_Z` y `SCALE`).
-
-| Repositorio de referencia | Uso en el proyecto |
-|---|---|
-| [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) | Referencia para la pista de carros con PyBullet |
-| [rex-gym](https://github.com/nicrusso7/rex-gym) | Referencia del cuadrúpedo (Spot) |
-| [humanoid-gym](https://github.com/0aqz0/humanoid-gym) | Referencia de los humanoides (NAO/Pepper) |
-
-# VLAN 3 — Plano de administración
-
-## Descripción
-
-Plano independiente que observa ambas zonas, mide el desempeño de la red y señaliza el estado de cada contenedor.
-
-## Componentes
-
-| Elemento | Función |
-|---|---|
-| `admin` (192.168.30.10) | Alpine con Mosquitto y `monitor.py`. Calcula latencia, jitter, pérdida y disponibilidad. Publica el estado y expone un dashboard en `:8080` |
-| ESP32 esclava `led-monitor` | Suscrita a `lab/status/#`, enciende un LED por contenedor |
-
-## Métricas y estados
-
-| Métrica | Cómo se mide |
-|---|---|
-| Latencia | RTT de `ping` a cada contenedor (1 Hz) |
-| Jitter | Variación entre el tiempo de llegada y el de emisión de los paquetes (estimador RFC 3550, `common/jitter.py`) |
-| Pérdida | Huecos en el número de secuencia |
-| Disponibilidad | % de pings respondidos en una ventana de 300 s |
-
-| Estado | Condición | LED |
-|---|---|---|
-| `UP` | Ping y métricas correctos | Encendido fijo |
-| `DEGRADED` | Latencia > 50 ms, jitter > 30 ms o sin métricas recientes | Parpadeo lento |
-| `DOWN` | Sin ping y sin métricas | Apagado |
-| Sin MQTT | La esclava no alcanza el broker | Todos parpadean rápido |
-
-Los umbrales se configuran con `RTT_WARN_MS`, `JITTER_WARN_MS` y `STALE_S` en `docker-compose.yml`.
-
-# Router inter-VLAN
-
-Contenedor Alpine conectado a las tres redes (`.254` en cada una) con `ip_forward=1` y política `FORWARD DROP`. Cada contenedor instala rutas estáticas hacia las otras subredes mediante `STATIC_ROUTES` (`common/entrypoint.sh`).
-
-| Origen → Destino | Política |
-|---|---|
-| VLAN 1 ↔ VLAN 2 | **Bloqueado** (aislamiento total) |
-| VLAN 3 → VLAN 1 / VLAN 2 | Solo ICMP echo (latencia y disponibilidad) |
-| VLAN 1 / VLAN 2 → admin | Solo MQTT 1883/tcp y heartbeat 9999/udp |
-| Cualquier otro tráfico | Bloqueado |
-
----
-
-# Hardware utilizado
-
-- 6 × ESP32 DevKit como maestras (3 en VLAN 1 y 3 en VLAN 2) y 1 × ESP32 DevKit como esclava.
-- 3 potenciómetros de 10 kΩ por ESP32 maestra.
-- 7 × LED y 7 × resistencias de 220 Ω.
-- Protoboard, cables Dupont y cables USB de datos.
-- Computador con Docker y red WiFi de 2.4 GHz.
-
-## Conexiones de las ESP32 maestras
-
-| Elemento | ESP32 | Función |
-|---|---|---|
-| Potenciómetro A | GPIO 34 | `v1` (dirección o grupo 1 de articulaciones) |
-| Potenciómetro B | GPIO 35 | `v2` (acelerador o grupo 2) |
-| Potenciómetro C | GPIO 32 | `v3` (grupo 3) |
-| LED integrado | GPIO 2 | Indicador de WiFi conectado |
-
-Cada potenciómetro se conecta con un extremo a 3V3, el otro a GND y el cursor al GPIO.
-
-## Conexiones de la ESP32 esclava (LEDs)
-
-Cada GPIO se conecta a una resistencia de 220 Ω, luego al LED y finalmente a GND.
+Hay 7 LEDs, uno por contenedor monitoreado:
 
 | LED | GPIO | Contenedor |
 |---|---|---|
@@ -232,292 +113,376 @@ Cada GPIO se conecta a una resistencia de 220 Ω, luego al LED y finalmente a GN
 | 6 | 19 | sim-spot |
 | 7 | 21 | sim-pepper |
 
----
-
-# Software utilizado
-
-## ESP32 (Arduino / PlatformIO)
-
-```text
-firmware/
-├── platformio.ini
-├── include/secrets.h.example
-└── src/
-    ├── ctrl/main.cpp          # ESP32 maestra
-    └── led_monitor/main.cpp   # ESP32 esclava
-```
-
-- **ctrl/main.cpp**: lee los tres potenciómetros y envía `CMD` a 50 Hz al contenedor y `HB` (heartbeat) a 10 Hz al administrador.
-- **led_monitor/main.cpp**: se suscribe a `lab/status/#` y controla los 7 LEDs.
-- `platformio.ini` define un entorno por dispositivo: `ctrl-1`, `ctrl-2`, `ctrl-3`, `ctrl-nao`, `ctrl-spot`, `ctrl-pepper` y `led-monitor`.
-
-## Contenedores
-
-| Imagen | Base | Contenido |
-|---|---|---|
-| `lab-sim-base` | python:3.10-slim | PyBullet, NumPy, paho-mqtt, websockets |
-| `lab-router` | alpine:3.20 | iptables, iproute2, tc |
-| `lab-admin` | alpine:3.20 | Mosquitto, Python 3, monitor |
-| `lab-track-server` | lab-sim-base | Servidor de pista |
-| `lab-player` | lab-sim-base | Cliente de pista |
-| `lab-robot-sim` | lab-sim-base | Simulador de robots |
-
-## Protocolos y tópicos
-
-| Canal | Formato |
+| Comportamiento del LED | Significado |
 |---|---|
-| ESP32 → contenedor | UDP `CMD,id,seq,ms,v1,v2,v3` |
-| ESP32 → admin | UDP `HB,id,seq,ms` |
-| player → track-server | WebSocket JSON `{player, steer, throttle, color, style, gain}` |
-| contenedor → admin | MQTT `metrics/<nombre>` (JSON) |
-| admin → LEDs | MQTT `lab/status/<nombre>` = `UP` / `DEGRADED` / `DOWN` (retenido) |
-| admin → dashboard | MQTT `lab/metrics/<nombre>` (JSON) y HTTP `:8080` |
+| **Encendido fijo** | `UP`: contenedor sano |
+| **Parpadeo lento** (2 Hz) | `DEGRADED`: latencia o jitter altos, o faltan métricas |
+| **Apagado** | `DOWN`: sin respuesta |
+| **Todos parpadean rápido** (5 Hz) | La esclava perdió la conexión con el broker MQTT |
+| Barrido de los 7 LEDs al encender | Prueba de que todos funcionan |
+
+Si la esclava no recibe un estado de un contenedor en 5 s, lo considera `DOWN`. En las ESP32 maestras, el LED integrado (GPIO 2) se enciende cuando hay Wi-Fi.
+
+### 2.3 Direccionamiento
+
+| Red | Subred | Contenedores | Puertos publicados en el PC |
+|---|---|---|---|
+| VLAN 1 Gamer | 192.168.10.0/24 | track-server `.10`, player-1 `.11`, player-2 `.12`, player-3 `.13`, router `.254` | UDP 5001, 5002, 5003 |
+| VLAN 2 Robótica | 192.168.20.0/24 | sim-nao `.11`, sim-spot `.12`, sim-pepper `.13`, router `.254` | UDP 5011, 5012, 5013 |
+| VLAN 3 Admin | 192.168.30.0/24 | admin `.10`, router `.254` | TCP 1883 (MQTT), UDP 9999 (heartbeat), TCP 8080 (panel) |
+
+Cada VLAN es una **red bridge de Docker** independiente, con su propia subred y su propio dominio de broadcast. Como alternativa, pueden crearse VLAN 802.1Q reales con redes `macvlan` sobre subinterfaces (`eth0.10`, `eth0.20`, `eth0.30`); no es la configuración por defecto.
+
+### 2.4 Evidencias
+
+_Agregar aquí las capturas y videos:_
+
+- **Panel del plano de administración con los 7 contenedores en `UP`:** _captura_
+- **Panel con un contenedor en `DEGRADED` o `DOWN` (experimentos E2 y E4):** _captura_
+- **Prueba de aislamiento (ping bloqueado entre VLAN 1 y VLAN 2):** _captura_
+- **Video del funcionamiento:** no se incluye video con hardware real, porque no se dispuso de las ESP32 físicas.
 
 ---
 
-# Funcionamiento del sistema
+## 3. El plano de administración: cómo se mide la red
 
-### 1. Lectura de los potenciómetros
+### 3.1 Qué se mide
 
-Cada ESP32 maestra lee tres entradas analógicas (12 bits, promedio de 4 lecturas) y arma el paquete UDP con un número de secuencia y su marca de tiempo (`millis`).
-
-### 2. Envío al contenedor
-
-El paquete `CMD` se envía a la IP del computador y al puerto publicado del contenedor correspondiente.
-
-### 3. Simulación
-
-- **VLAN 1:** el `player` reenvía la orden al `track-server`, que mueve el coche en PyBullet.
-- **VLAN 2:** el simulador mapea los valores a las articulaciones del robot.
-
-### 4. Telemetría
-
-Cada contenedor publica cada segundo en `metrics/<nombre>` su tasa de paquetes, pérdidas, jitter y frecuencia de simulación. El tráfico atraviesa el router, que solo permite MQTT hacia el administrador.
-
-### 5. Medición y clasificación
-
-`monitor.py` combina el ping, el heartbeat de las ESP32 y la telemetría, clasifica cada contenedor en `UP`, `DEGRADED` o `DOWN`, y guarda cada muestra en `data/metrics.csv`.
-
-### 6. Señalización
-
-La ESP32 esclava recibe `lab/status/<nombre>` y enciende, hace parpadear o apaga el LED correspondiente.
-
-## Secuencia de operación
-
-1. El usuario mueve un potenciómetro de una ESP32 maestra.
-2. La ESP32 envía el paquete UDP al contenedor de su zona.
-3. El contenedor actualiza la simulación PyBullet.
-4. El contenedor publica sus métricas por MQTT hacia la VLAN 3.
-5. El administrador mide latencia, jitter y disponibilidad.
-6. El administrador publica el estado de cada contenedor.
-7. La ESP32 esclava refleja el estado en los LEDs.
-
-## Comunicaciones utilizadas
-
-| Comunicación | Función |
+| Métrica | Cómo se obtiene |
 |---|---|
-| ADC / GPIO | Lectura de potenciómetros y control de LEDs |
-| WiFi + UDP | ESP32 maestra → contenedor y heartbeat |
-| WebSocket | player → track-server |
-| MQTT | Telemetría y estado de los contenedores |
-| ICMP | Medición de latencia y disponibilidad |
-| Docker networks + iptables | Segmentación en VLANs y aislamiento |
+| **Latencia** | Tiempo de ida y vuelta (RTT) de un `ping` ICMP a cada contenedor, una vez por segundo |
+| **Jitter** | Variación del tiempo entre paquetes consecutivos, con el estimador de la RFC 3550 sobre los flujos UDP |
+| **Pérdida** | Huecos en el número de secuencia de los paquetes |
+| **Disponibilidad** | Porcentaje de pings respondidos en las últimas 300 muestras (unos 5 minutos) |
+| **Actividad** | Métricas que cada contenedor publica por MQTT: tasa de paquetes, jitter propio y frecuencia de simulación |
+
+### 3.2 Estimador de jitter
+
+Cada paquete de control lleva un número de secuencia `S` y la marca de tiempo del emisor `t` (los milisegundos de la ESP32). Para cada paquete recibido en el instante `r`, se compara cuánto tardó en llegar respecto al anterior con cuánto tardó en enviarse:
+
+```
+D(i) = | (r_i − r_(i−1)) − (t_i − t_(i−1)) |
+J    ← J + (D − J) / 16
+```
+
+Así no hace falta que los relojes de la ESP32 y del PC estén sincronizados: solo importan las **diferencias**. Si los paquetes llegan con el mismo espaciado con que salieron, `D = 0` y el jitter es 0. El factor 1/16 suaviza el valor, para que un paquete aislado no lo dispare. Si el número de secuencia retrocede (la ESP32 se reinició), se reinicia la referencia sin contar un falso jitter. Las pérdidas se cuentan sumando los saltos de secuencia.
+
+### 3.3 Clasificación del estado
+
+```mermaid
+flowchart TD
+    I["Cada 1 s, para cada contenedor"] --> Q{"¿Responde al ping<br/>o hay métricas de menos de 3 s?"}
+    Q -- "ninguna de las dos" --> D["DOWN"]
+    Q -- "al menos una" --> C{"¿RTT mayor a 50 ms,<br/>sin ping, sin métricas recientes<br/>o jitter mayor a 30 ms?"}
+    C -- "sí" --> G["DEGRADED + motivo"]
+    C -- "no" --> U["UP"]
+    D --> P["Publicar lab/status/nombre<br/>(retenido) y guardar en el CSV"]
+    G --> P
+    U --> P
+```
+
+Los umbrales (RTT 50 ms, jitter 30 ms, métricas 3 s) se pueden cambiar con variables de entorno del contenedor `admin`. El motivo (`latencia-alta`, `jitter-alto`, `sin-ping`, `sin-metricas`) se muestra en el panel.
 
 ---
 
-# Ejecución
+## 4. Red y protocolos de comunicación
 
-## 1. Configurar y levantar los contenedores
+### 4.1 Protocolos
 
-Desde la carpeta del proyecto, con Docker y `make` instalados:
+| Enlace | Protocolo | Formato | Frecuencia |
+|---|---|---|---|
+| ESP32 maestra → contenedor | UDP | `CMD,id,seq,ms,v1,v2,v3` | 50 Hz |
+| ESP32 maestra → admin | UDP (puerto 9999) | `HB,id,seq,ms` | 10 Hz |
+| `player` → `track-server` | WebSocket | JSON `{player, steer, throttle, color, style, gain}` | 30 Hz |
+| Contenedor → admin | MQTT `metrics/<nombre>` | JSON con tasa, pérdidas, jitter y frecuencia de simulación | 1 Hz |
+| admin → ESP32 esclava | MQTT `lab/status/<nombre>` | `UP`, `DEGRADED` o `DOWN` (mensaje retenido) | 1 Hz |
+| admin → panel web | MQTT `lab/metrics/<nombre>` y HTTP | JSON con todas las métricas | 1 Hz |
+| admin → contenedores | ICMP | `ping` | 1 Hz |
 
-```bash
-cp .env.example .env          # ya incluye DOCKERHUB_USER=mafepr08
-make up                       # construye la base (compila PyBullet, ~5 min la primera vez) y levanta todo
-make test                     # valida el aislamiento entre VLAN
+Se usa **UDP** para el control porque el dato más reciente siempre reemplaza al anterior: un paquete perdido no justifica una retransmisión que retrasaría los siguientes. Se usa **MQTT** para la telemetría y el estado porque es un esquema de publicación y suscripción: la ESP32 esclava solo se suscribe y no necesita conocer a nadie. El estado se publica **retenido**, así que la esclava recibe el último valor apenas se conecta.
+
+```mermaid
+sequenceDiagram
+    participant E as ESP32 maestra
+    participant C as Contenedor (zona)
+    participant R as Router
+    participant A as admin (VLAN 3)
+    participant L as ESP32 esclava
+    loop 50 Hz
+        E->>C: CMD,id,seq,ms,v1,v2,v3 (UDP)
+    end
+    loop 10 Hz
+        E->>A: HB,id,seq,ms (UDP 9999)
+    end
+    loop 1 Hz
+        C->>R: metrics/nombre (MQTT 1883)
+        R->>A: reenvía
+        A->>R: ping
+        R->>C: reenvía
+        C-->>A: respuesta (RTT)
+        A->>L: lab/status/nombre = UP / DEGRADED / DOWN
+    end
+    Note over L: enciende, parpadea o apaga el LED
 ```
 
-Dashboard del plano de administración: http://localhost:8080
+### 4.2 Cómo llegan los paquetes a un contenedor
 
-> Si las subredes `192.168.10/20/30.0/24` ya las usa tu red local, Docker mostrará `Pool overlaps with other one`. Hay que cambiarlas en `docker-compose.yml`, `services/router/router.sh` y `services/admin/monitor.py`.
+Las ESP32 están en la red local y los contenedores en redes internas de Docker. Por eso cada contenedor **publica un puerto UDP** en el PC (por ejemplo, 5001 para `player-1`), y las ESP32 envían sus paquetes a la IP del PC en ese puerto. Docker los entrega al contenedor correspondiente.
 
-## 2a. Sin hardware (ESP32 virtuales)
+### 4.3 Aislamiento y política del router
 
-El emulador envía el mismo protocolo UDP que el firmware real:
+El router es un contenedor conectado a las tres redes (`.254` en cada una), con el reenvío de IP activado y la política `FORWARD DROP`: lo que no está permitido explícitamente, se descarta.
 
-```bash
-make emulate                                              # lanza 6 ESP32 virtuales
-mosquitto_sub -h localhost -t 'lab/status/#' -v           # estado que verían los LEDs
-```
+| Origen → Destino | Política |
+|---|---|
+| VLAN 1 ↔ VLAN 2 | **Bloqueado**: no hay ninguna regla que lo permita |
+| VLAN 3 → VLAN 1 y VLAN 2 | Solo **ICMP echo** (latencia y disponibilidad) |
+| VLAN 1 y VLAN 2 → admin | Solo **MQTT 1883/tcp** y **heartbeat 9999/udp** |
+| Respuestas de conexiones ya establecidas | Permitidas |
+| Cualquier otro tráfico | Bloqueado |
 
-## 2b. Con hardware
-
-1. Copiar `firmware/include/secrets.h.example` a `firmware/include/secrets.h` y completar `WIFI_SSID`, `WIFI_PASS` y `HOST_IP` (IP LAN del computador con Docker).
-2. Abrir en el firewall del computador los puertos UDP 5001-5003, 5011-5013, 9999 y TCP 1883.
-3. Programar cada ESP32 maestra con su entorno:
-
-```bash
-cd firmware
-pio run -e ctrl-1 -t upload
-pio run -e ctrl-2 -t upload
-pio run -e ctrl-3 -t upload
-pio run -e ctrl-nao -t upload
-pio run -e ctrl-spot -t upload
-pio run -e ctrl-pepper -t upload
-pio run -e led-monitor -t upload      # ESP32 esclava
-```
-
-> Cerrar cualquier monitor serie abierto antes de subir el firmware.
-
-## 3. Apagar el laboratorio
-
-```bash
-make down
-```
+Cada contenedor instala al arrancar rutas estáticas hacia las otras subredes a través del router (por ejemplo, un `player` envía lo destinado a 192.168.30.0/24 por 192.168.10.254). Así el plano de administración observa ambas zonas "sin romper su aislamiento": las zonas no se ven entre sí, y hacia el administrador solo pasan dos puertos.
 
 ---
 
-# Validación experimental
+## 5. Simulaciones en PyBullet y Docker
 
-Todos los experimentos escriben en `data/metrics.csv` y se analizan con:
+### 5.1 Zona Gamer
 
-```bash
-python3 tools/analyze_metrics.py data/metrics.csv --since <ts> --until <ts> --plot
-```
+- **Servidor de pista:** PyBullet sin ventana, a 240 Hz en tiempo real. Una pista elíptica de 10 m × 6 m marcada con 48 waypoints, y 3 coches del modelo `racecar` de `pybullet_data`.
+- **Control:** cada coche recibe velocidad de las ruedas (acelerador) y ángulo de las ruedas delanteras (dirección).
+- **Piloto automático:** si un jugador no envía comandos durante 1 s, su coche busca el waypoint más cercano, apunta a 3 waypoints adelante y corrige el rumbo con un controlador proporcional, a velocidad moderada.
+- **Clientes:** cada `player` recibe UDP de su ESP32, lo convierte (zona muerta de 5 % en la dirección, acelerador de 0 a 1) y lo reenvía por WebSocket. Si pierde la conexión con el servidor, reintenta cada segundo. Su color (`CAR_COLOR`) y estilo (`CAR_STYLE`) son configurables.
 
-(`date +%s` permite anotar los tiempos de inicio y fin de cada experimento.)
+### 5.2 Zona Robótica
 
-| Exp. | Procedimiento | Resultado esperado |
+- Tres contenedores, cada uno con **un robot** y **su propia ESP32**: Spot (cuadrúpedo), NAO (humanoide pequeño) y Pepper (humanoide grande).
+- Se detectan las articulaciones rotacionales del modelo y se reparten en **tres grupos**. Cada valor analógico de la ESP32 (0–4095) fija la posición objetivo de su grupo, entre los límites de cada articulación.
+- Por defecto el robot está **sujeto por la base**, para que no se caiga y se aprecie bien el movimiento (se puede liberar con `FIX_BASE=0`).
+- Modelos: por defecto se usan los de `pybullet_data` (`a1` para Spot y `humanoid`, escalado, para NAO y Pepper). Los repositorios de referencia se pueden usar montando sus modelos URDF en el contenedor:
+
+| Referencia | Aporta |
+|---|---|
+| [rl-baselines3-zoo](https://github.com/DLR-RM/rl-baselines3-zoo) | Pista de carros con PyBullet |
+| [rex-gym](https://github.com/nicrusso7/rex-gym) | Cuadrúpedo (Spot) |
+| [humanoid-gym](https://github.com/0aqz0/humanoid-gym) | Humanoides (NAO y Pepper) |
+
+### 5.3 Por qué Docker
+
+Cada simulación necesita PyBullet, NumPy y sus dependencias. Con Docker, los 3 integrantes ejecutan exactamente lo mismo sin instalar ni resolver versiones. Se construye una **imagen base** con PyBullet (que se compila una sola vez) y todas las imágenes de simulación parten de ella. El archivo `docker-compose.yml` crea las tres redes, asigna IP fijas, publica los puertos y levanta los 9 contenedores.
+
+### 5.4 ESP32 virtuales
+
+Como no se dispuso de las placas, se escribió un **emulador de ESP32 maestra** que envía exactamente los mismos paquetes (`CMD` a 50 Hz y `HB` a 10 Hz) que el firmware real, con señales senoidales en lugar de potenciómetros. Permite validar todo el laboratorio y, además, **inyectar jitter y pérdidas** a voluntad. Además, el router incluye `tc`, que permite añadir latencia y jitter a una VLAN para los experimentos.
+
+---
+
+## 6. Análisis
+
+### 6.1 Ancho de banda
+
+Estimaciones por tamaño de trama (sin cabeceras de red):
+
+| Flujo | Tamaño aprox. | Frecuencia | Por dispositivo |
+|---|---|---|---|
+| `CMD` (ESP32 → contenedor) | 40 B | 50 Hz | ≈ 2 KB/s |
+| `HB` (ESP32 → admin) | 22 B | 10 Hz | ≈ 0.2 KB/s |
+| Métricas MQTT (contenedor → admin) | ≈ 250 B | 1 Hz | ≈ 0.25 KB/s |
+| Estado y métricas (admin → MQTT) | ≈ 350 B por contenedor | 1 Hz | ≈ 2.5 KB/s en total |
+
+Las 6 ESP32 maestras generan unos 13 KB/s hacia los contenedores, y el administrador unos 4 KB/s: **menos de 0.2 Mbit/s en total**. Una red Wi-Fi 802.11n mueve varios Mbit/s, así que la red queda muy por debajo de su capacidad.
+
+### 6.2 Qué se espera del jitter
+
+Las ESP32 envían cada 20 ms. En una red local sin carga, el jitter debería ser de unos pocos milisegundos, y por eso el umbral de `DEGRADED` se fijó en 30 ms (más que una vez y media el periodo de envío). Si se inyectan retardos aleatorios de hasta 80 ms, el estimador debe superar ese umbral, y es lo que se verifica en el experimento E3.
+
+### 6.3 Por qué la clasificación usa varias señales
+
+Un solo indicador no basta. Un contenedor puede responder al ping y aun así tener la simulación detenida (se detecta por la falta de métricas), o publicar métricas pero con la red lenta (se detecta por el RTT). `DOWN` exige que **fallen ambas señales**; con una sola falla, el contenedor queda en `DEGRADED` con el motivo explicado.
+
+### 6.4 Seguridad del aislamiento
+
+Docker ya impide el tráfico directo entre redes bridge distintas. El router añade una **política explícita y verificable**: la política por defecto descarta, y solo se abren tres excepciones (ICMP del administrador, MQTT y heartbeat hacia el administrador). Esto se comprueba con el ping bloqueado entre VLAN 1 y VLAN 2 y con los contadores de `iptables`.
+
+### 6.5 Limitaciones
+
+El broker MQTT es anónimo y sin cifrado, adecuado para un laboratorio. Las "VLAN" son redes bridge de Docker, equivalentes lógicas a VLAN pero sin etiquetas 802.1Q. La latencia medida es la de las redes virtuales del PC, que es mucho menor que la de una red Wi-Fi real.
+
+---
+
+## 7. Resultados
+
+### 7.1 Comprobaciones realizadas durante el desarrollo
+
+Pruebas locales de la lógica del administrador y del estimador de jitter (sin Docker ni ESP32):
+
+| Prueba | Entrada | Resultado |
 |---|---|---|
-| E0 Aislamiento | `make test` | VLAN 1 ↔ VLAN 2 bloqueado; admin alcanza ambas; zonas → admin solo 1883 y 9999 |
-| E1 Línea base | `make emulate` durante 5 min | Los 7 contenedores en `UP`, RTT bajo, disponibilidad cercana al 100 % |
-| E2 Latencia | `tools/inject_latency.sh 20 100 20` (100 ms ± 20 en VLAN 2) | `sim-*` pasan a `DEGRADED`. `tools/inject_latency.sh 20 clear` restablece |
-| E3 Jitter y pérdida | `python3 tools/esp32_emulator.py --id ctrl-1 --cmd-port 5001 --jitter-ms 80 --drop 0.1` | Suben el jitter y la pérdida; `player-1` pasa a `DEGRADED` |
-| E4 Disponibilidad | `docker stop sim-spot`, esperar 30 s, `docker start sim-spot` | `sim-spot` pasa a `DOWN` y se recupera |
-| E5 Aislamiento bajo carga | Repetir E0 durante E2 | El router sigue bloqueando VLAN 1 ↔ VLAN 2 |
+| Clasificación | Ping de 3.2 ms y métricas recientes | `UP` |
+| Clasificación | Ping de 120 ms | `DEGRADED` |
+| Clasificación | Sin ping y sin métricas | `DOWN` |
+| Estimador de jitter | 50 paquetes con periodo base de 20 ms y retardo aleatorio de 0 a 10 ms | 50 recibidos, 0 perdidos, jitter estimado de 4.9 ms |
 
-## Resultados
+### 7.2 Comportamiento esperado según el diseño
 
-> Las mediciones se realizan con las **ESP32 virtuales** (`make emulate`), porque no se dispuso de las placas físicas. El firmware de `firmware/` está escrito para el hardware real, pero no se probó físicamente.
+No son mediciones: se deducen de los umbrales configurados (latencia superior a 50 ms o jitter superior a 30 ms → `DEGRADED`; sin ping y sin métricas → `DOWN`).
 
-| Experimento | Contenedor | RTT medio (ms) | RTT p95 (ms) | Jitter medio (ms) | Disponibilidad (%) | Estado |
+| Experimento | Contenedor | Condición aplicada | Estado esperado | LED esperado |
+|---|---|---|---|---|
+| E0 Aislamiento | — | Ping entre VLAN 1 y VLAN 2 | Bloqueado | — |
+| E1 Línea base | player-1 | Sin perturbaciones | `UP` | Fijo |
+| E2 Latencia | sim-nao | 100 ms ± 20 ms de retardo en la VLAN 2 | `DEGRADED` (latencia alta) | Parpadeo lento |
+| E3 Jitter y pérdida | player-1 | Jitter de hasta 80 ms y 10 % de paquetes perdidos | `DEGRADED` (jitter alto) | Parpadeo lento |
+| E4 Disponibilidad | sim-spot | Contenedor detenido | `DOWN`, y `UP` al reiniciarlo | Apagado, luego fijo |
+
+### 7.3 Resultados medidos
+
+_Pendiente de ejecutar los experimentos de la sección 7.2. Se completa con la salida del análisis de métricas (RTT, jitter y disponibilidad por contenedor)._
+
+| Experimento | Contenedor | RTT medio (ms) | RTT p95 (ms) | Jitter medio (ms) | Disponibilidad (%) | Estado observado |
 |---|---|---|---|---|---|---|
 | E1 | player-1 | | | | | |
 | E2 | sim-nao | | | | | |
 | E3 | player-1 | | | | | |
 | E4 | sim-spot | | | | | |
 
----
+### 7.4 Posibles mejoras
 
-# Imágenes en Docker Hub
-
-```bash
-docker login
-make push
-```
-
-| Imagen | Enlace |
-|---|---|
-| lab-sim-base | https://hub.docker.com/r/mafepr08/lab-sim-base |
-| lab-router | https://hub.docker.com/r/mafepr08/lab-router |
-| lab-admin | https://hub.docker.com/r/mafepr08/lab-admin |
-| lab-track-server | https://hub.docker.com/r/mafepr08/lab-track-server |
-| lab-player | https://hub.docker.com/r/mafepr08/lab-player |
-| lab-robot-sim | https://hub.docker.com/r/mafepr08/lab-robot-sim |
+- **Probar el firmware en las ESP32 físicas** y comparar la latencia y el jitter reales por Wi-Fi con los de las redes virtuales.
+- **Usar los modelos originales** de los repositorios de referencia (rex-gym y humanoid-gym) para Spot, NAO y Pepper.
+- **Entrenar un agente de aprendizaje por refuerzo** con rl-baselines3-zoo para los coches autónomos, en lugar del controlador por waypoints.
+- **Seguridad:** usuarios, permisos y TLS en el broker MQTT.
+- **Enrutamiento dinámico** con FRR en el router y **VLAN 802.1Q reales** con `macvlan`.
+- **Visualización:** paneles de Grafana sobre el CSV de métricas.
 
 ---
 
-# Organización del repositorio
+## 8. Materiales y software
 
-```text
-Actividad-8/
-│
-├── docker-compose.yml        # 3 redes + 9 contenedores
-├── Makefile                  # base | build | up | test | emulate | analyze | push
-├── .env.example
-├── README.md
-│
-├── common/
-│   ├── jitter.py             # jitter RFC 3550, pérdida y tasa
-│   ├── mqtt_util.py          # cliente y publicador de métricas
-│   └── entrypoint.sh         # rutas estáticas inter-VLAN
-│
-├── docker/base/Dockerfile    # imagen base con PyBullet
-│
-├── services/
-│   ├── router/               # Alpine + iptables
-│   ├── admin/                # Alpine + Mosquitto + monitor.py
-│   ├── track_server/         # pista PyBullet + WebSocket
-│   ├── player/               # cliente UDP → WebSocket
-│   └── robot_sim/            # PyBullet real-to-sim
-│
-├── firmware/
-│   ├── platformio.ini
-│   ├── include/secrets.h.example
-│   └── src/
-│       ├── ctrl/main.cpp
-│       └── led_monitor/main.cpp
-│
-├── tools/
-│   ├── esp32_emulator.py
-│   ├── launch_emulators.py
-│   ├── inject_latency.sh
-│   └── analyze_metrics.py
-│
-├── tests/test_isolation.sh
-├── scripts/push_images.sh
-└── data/                     # metrics.csv generado por el administrador
-```
-
----
-
-# Requisitos generales
-
-| Elemento | Requisito |
-|---|---|
-| Sistema | Linux, macOS o Windows con WSL2 |
-| Contenedores | Docker y Docker Compose v2 |
-| Herramientas | `make`, Python 3, PlatformIO (solo con hardware) |
-| Red | Subredes 192.168.10/20/30.0/24 libres; WiFi 2.4 GHz (solo con hardware) |
-| Placas | 7 × ESP32 DevKit (opcional, existe emulador) |
-| Periféricos | 3 potenciómetros por maestra, 7 LEDs con resistencias de 220 Ω |
-| Librerías (contenedores) | pybullet, numpy, paho-mqtt, websockets |
-| Librerías (ESP32) | PubSubClient (solo la esclava) |
-
----
-
-# Solución de problemas
-
-| Problema | Causa probable | Solución |
+| Material | Cantidad | Uso |
 |---|---|---|
-| `Pool overlaps with other one` | La red local usa las mismas subredes | Cambiar las subredes en `docker-compose.yml`, `router.sh` y `monitor.py` |
-| Todos los contenedores en `DOWN` al inicio | El administrador necesita unos segundos para medir | Esperar unos 5 s |
-| `DEGRADED` con `sin-metricas` | Fallan las rutas o el firewall del router | `docker exec router iptables -L FORWARD -nv` y revisar `STATIC_ROUTES` |
-| La ESP32 no llega al contenedor | `HOST_IP` incorrecta o firewall del computador | Verificar IP y puertos; probar antes con `make emulate` |
-| `iptables` falla en el router | El kernel del host no tiene `nf_conntrack` | Usar el paquete `iptables-legacy` en el router |
-| El coche gira o avanza al revés | El signo depende del URDF | Ajustar el signo en `Track.apply_controls()` |
-| `a1/a1.urdf` no se encuentra | La versión de `pybullet_data` no lo incluye | Usar `URDF=` con un modelo de los repositorios de referencia |
-| Error de puerto ocupado al subir el firmware | Otro programa usa el puerto serie | Cerrar monitores serie y volver a subir |
-| El LED no enciende | Cableado, polaridad o resistencia | Revisar GPIO, LED (pata larga al GPIO) y GND |
+| ESP32 DevKit | 7 | 6 maestras (3 por zona) y 1 esclava |
+| Potenciómetros de 10 kΩ | 18 (3 por maestra) | Entradas de control |
+| LED | 7 | Estado de cada contenedor |
+| Resistencias de 220 Ω | 7 | Una por LED |
+| Protoboard, cables Dupont y cables USB de datos | los necesarios | Montaje y alimentación |
+| PC con Docker y Wi-Fi 2.4 GHz | 1 | Contenedores, router y plano de administración |
+
+**Conexiones de cada ESP32 maestra:** potenciómetros en GPIO 34, 35 y 32 (un extremo a 3V3, el otro a GND y el cursor al GPIO). **ESP32 esclava:** cada LED en su GPIO (tabla de la sección 2.2) a través de una resistencia de 220 Ω, con el otro extremo a GND.
+
+| Software | Para qué |
+|---|---|
+| Docker Desktop (motor WSL 2) y Docker Compose | Contenedores, redes y router |
+| VS Code + PlatformIO (Arduino) | Firmware de las ESP32 |
+| PyBullet 3.2.6 | Simulación física |
+| Python 3.10 en las imágenes (NumPy, paho-mqtt, websockets) | Simuladores y clientes |
+| Alpine Linux 3.20, Mosquitto, iptables, iproute2 | Plano de administración y router |
+| Python 3 en el PC (opcional) | Emulador de ESP32 y análisis de métricas |
 
 ---
 
-# Evidencias
+## 9. Explicación del código
 
-## Resultados experimentales
+### 9.1 ESP32 maestra
 
-Las tablas y gráficas generadas por `tools/analyze_metrics.py` se agregan en la carpeta `evidencias/` una vez ejecutados los experimentos.
+Un bucle sin bloqueos reparte el tiempo entre dos envíos: el comando de control cada 20 ms y el heartbeat cada 100 ms. Antes de enviar, promedia cuatro lecturas de cada potenciómetro para filtrar el ruido, y desactiva el ahorro de energía del Wi-Fi para reducir el jitter:
 
-## Video
+```cpp
+WiFi.setSleep(false);                              // menos jitter
+...
+if (now - lastCmd >= 20) {
+  lastCmd += 20;
+  snprintf(buf, sizeof(buf), "CMD,%s,%lu,%lu,%d,%d,%d", DEVICE_ID, seqCmd++, now,
+           readAvg(PIN_A), readAvg(PIN_B), readAvg(PIN_C));
+  // se envía por UDP al puerto del contenedor
+}
+```
 
-No se incluye video del funcionamiento con hardware real, porque no se dispuso de las ESP32 físicas.
+Todas las maestras llevan el mismo código; solo cambian el identificador y el puerto de destino, que se definen al compilar con un entorno distinto por placa.
+
+### 9.2 ESP32 esclava
+
+Se conecta al Wi-Fi, luego al broker MQTT y se suscribe a `lab/status/#`. Al llegar un mensaje, toma el nombre del contenedor del final del tópico y actualiza su estado. En cada vuelta del bucle decide el LED sin bloquear:
+
+```cpp
+on = s == S_UP ? true
+   : (s == S_DEGRADED ? (now / 250) % 2 : false);    // fijo / parpadeo / apagado
+```
+
+Si no recibe un estado en 5 s, o pierde el broker, lo indica con el parpadeo correspondiente.
+
+### 9.3 Estimador de jitter
+
+Una clase pequeña, compartida por el administrador y los simuladores, guarda el instante de llegada y la marca del emisor del paquete anterior:
+
+```python
+d = abs((arr - self.last_arr) - (sender_ms - self.last_snd))
+self.jitter += (d - self.jitter) / 16.0
+```
+
+También cuenta pérdidas por saltos en la secuencia y mide la tasa de paquetes en una ventana deslizante de 2 s.
+
+### 9.4 Simuladores
+
+- **Servidor de pista:** crea el mundo, los 3 coches y la pista; en cada ciclo aplica los comandos de cada jugador (o el piloto automático) y avanza la física. Publica cada segundo su frecuencia de simulación y el modo de cada coche.
+- **Cliente `player`:** recibe UDP en un puerto, calcula dirección y acelerador, y mantiene la conexión WebSocket con el servidor, con reintentos.
+- **Simulador de robot:** carga el modelo, agrupa sus articulaciones en tres y, a 30 Hz, aplica la posición objetivo que dicen los tres valores recibidos. Un hilo aparte escucha el UDP para no frenar la física.
+
+Todos publican su propio jitter y su tasa por MQTT, que el administrador cruza con el ping.
+
+### 9.5 Administrador
+
+Cuatro hilos independientes: el que lanza los 7 pings en paralelo cada segundo, el que escucha los heartbeats UDP, el cliente MQTT que recibe las métricas, y el que cada segundo calcula el estado, lo publica y lo guarda. El panel web es un servidor HTTP mínimo que muestra la tabla y se refresca solo.
+
+### 9.6 Router
+
+Un contenedor Alpine que, al arrancar, activa el reenvío de IP y carga las reglas: política por defecto descartar, aceptar las conexiones ya establecidas, aceptar solo el ping del administrador y solo MQTT y heartbeat hacia él:
+
+```sh
+iptables -P FORWARD DROP
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -s 192.168.30.0/24 -d 192.168.10.0/24 -p icmp --icmp-type echo-request -j ACCEPT
+iptables -A FORWARD -s 192.168.10.0/24 -d 192.168.30.10 -p tcp --dport 1883 -j ACCEPT
+```
 
 ---
 
-# Conclusiones
+## 10. Problemas comunes y soluciones
 
-La actividad integra contenedores Docker, redes segmentadas, simulación física y microcontroladores en una sola arquitectura. La segmentación en tres redes con un router que solo permite el tráfico estrictamente necesario muestra cómo aislar zonas de simulación y, al mismo tiempo, mantener un plano de administración que las observa.
+| Problema | Causa y solución |
+|---|---|
+| `Pool overlaps with other one` | Tu red local usa las mismas subredes: cambiarlas en la configuración de Docker, del router y del administrador |
+| Todos en `DOWN` al iniciar | El administrador necesita unos 5 s para medir; esperar |
+| `DEGRADED` con `sin-metricas` | Fallan las rutas o las reglas del router: revisar `docker exec router iptables -L FORWARD -nv` |
+| `docker` no se reconoce | Docker Desktop no está abierto o instalado; esperar a "Engine running" |
+| La ESP32 no llega al contenedor | IP del PC incorrecta o firewall de Windows: abrir los puertos UDP y probar antes con las ESP32 virtuales |
+| `iptables` falla en el router | El kernel del equipo no tiene `nf_conntrack`: usar `iptables-legacy` en el router |
+| El coche gira o avanza al revés | El signo depende del modelo: invertirlo en la aplicación de los controles |
+| No se encuentra el modelo `a1` | La versión de `pybullet_data` no lo incluye: usar un modelo de los repositorios de referencia |
+| Error de puerto ocupado al cargar el firmware | Otro programa usa el puerto serie: cerrar los monitores serie |
+| Un LED no enciende | Revisar el GPIO, la polaridad del LED (pata larga al GPIO) y la resistencia |
 
-El patrón maestro–esclavo se aplica en dos niveles: las ESP32 maestras controlan en tiempo real cada simulación (los robots reproducen el movimiento de los potenciómetros), y la ESP32 esclava refleja con LEDs el estado calculado por el administrador a partir de la latencia, el jitter y la disponibilidad.
+---
 
-El emulador de ESP32 permite validar la arquitectura completa sin hardware, y el uso de un único protocolo entre el firmware y el emulador facilita pasar después a las placas reales. Como trabajo futuro quedan la validación del firmware en las ESP32 físicas, el uso de los modelos originales de los repositorios de referencia, la autenticación y el cifrado TLS en MQTT, y el enrutamiento dinámico con FRR.
+## 11. Conclusiones
+
+- Se integraron en una sola arquitectura contenedores Docker, redes segmentadas, simulación física y microcontroladores, siguiendo un patrón maestro–esclavo: las ESP32 maestras controlan cada simulación en tiempo real y la ESP32 esclava refleja el estado calculado por el administrador.
+- Un router con política de "todo bloqueado salvo lo necesario" permite que el plano de administración observe ambas zonas sin que estas puedan verse entre sí, y solo se abren tres excepciones: ping, MQTT y heartbeat.
+- Medir la red con varias señales (ping, heartbeat y métricas de cada contenedor) permite distinguir entre un contenedor lento, uno degradado y uno caído, y explicar el motivo.
+- El estimador de jitter de la RFC 3550 no necesita relojes sincronizados, ya que compara diferencias, lo que lo hace adecuado para microcontroladores y PC con relojes distintos.
+- Contar con ESP32 virtuales que hablan el mismo protocolo que el firmware permitió validar la lógica y planear los experimentos sin las placas físicas, aunque las mediciones con hardware real quedan como trabajo pendiente.
+- Docker garantiza que todo el laboratorio se reproduce igual en cualquier equipo con un par de comandos.
+
+---
+
+## 12. Referencias
+
+- Schulzrinne, H., Casner, S., Frederick, R., & Jacobson, V. (2003). *RTP: A Transport Protocol for Real-Time Applications*, RFC 3550 (estimador de jitter).
+- OASIS. *MQTT Version 3.1.1*, y Eclipse Mosquitto. https://mosquitto.org
+- Coumans, E., & Bai, Y. *PyBullet, a Python module for physics simulation for games, robotics and machine learning*. https://pybullet.org
+- Docker Inc. *Docker Compose* y *Networking overview*. https://docs.docker.com
+- Netfilter Project. *iptables* y `tc-netem` (emulación de red).
+- Espressif Systems. Documentación de Arduino-ESP32 (Wi-Fi y ADC).
+- Raffin, A. et al. *RL Baselines3 Zoo*. https://github.com/DLR-RM/rl-baselines3-zoo
+- Russo, N. *rex-gym*. https://github.com/nicrusso7/rex-gym
+- *humanoid-gym*. https://github.com/0aqz0/humanoid-gym
