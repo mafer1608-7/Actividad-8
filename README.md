@@ -1,6 +1,6 @@
 # Actividad 8 — Zonas virtualizadas de simulación físico-robótica controladas por ESP32 con plano de administración de red
 
-**Autores:** Alix Estefania Maldonado Roa · Juan David Artunduaga Diaz · María Fernanda Peñuela Romero
+**Autores:** María Fernanda Peñuela Romero · Alix Estefania Maldonado Roa · Juan David Artunduaga Diaz
 **Curso:** Micros y laboratorio · **Fecha:** 7 de octubre de 2026
 **Repositorio:** https://github.com/mafer1608-7/Actividad-8 · **Docker Hub:** https://hub.docker.com/u/mafepr08
 

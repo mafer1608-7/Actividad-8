@@ -1,0 +1,8 @@
+FROM alpine:3.20
+RUN apk add --no-cache python3 py3-paho-mqtt mosquitto mosquitto-clients
+COPY common /app/common
+COPY services/admin /app/admin
+RUN cp /app/common/entrypoint.sh /entrypoint.sh && chmod +x /entrypoint.sh /app/admin/start.sh
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/app/admin/start.sh"]

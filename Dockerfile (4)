@@ -1,0 +1,4 @@
+ARG BASE_IMAGE=lab/lab-sim-base:latest
+FROM ${BASE_IMAGE}
+COPY services/player /app/player
+CMD ["python", "/app/player/player.py"]

@@ -1,0 +1,6 @@
+.env
+data/*.csv
+data/*.png
+firmware/include/secrets.h
+.pio/
+__pycache__/
