@@ -4,8 +4,8 @@
 > (carreras multijugador y robótica), un plano de administración que mide jitter, latencia y disponibilidad,
 > y una ESP32 esclava que refleja el estado de cada contenedor con LEDs.
 
-**Autor(es):** _<tu nombre / grupo>_ · **Curso:** _<curso>_ · **Fecha:** _<fecha>_
-**Imágenes Docker Hub:** `<tu_usuario>/lab-*` (ver [sección 9](#9-imágenes-en-docker-hub)) · **Video:** _<enlace>_
+**Autoras/es:** Alix Estefania Maldonado Roa, Juan David Artunduaga Diaz y María Fernanda Peñuela Romero · **Curso:** Micros y laboratorio · **Fecha:** 6 de octubre de 2026
+**Imágenes Docker Hub:** `mafepr08/lab-*` (ver [sección 9](#9-imágenes-en-docker-hub)) · **Repositorio:** https://github.com/mafer1608-7/Actividad-8 · **Video:** no incluido (no se dispuso de las ESP32 físicas)
 
 ---
 
@@ -47,7 +47,7 @@ flowchart TB
   V1 x--x|"BLOQUEADO"| V2
 ```
 
-> La arquitectura es la sugerida en el enunciado (4.ª imagen), con dos decisiones propias: (a) se usan **7 LEDs**
+> La arquitectura es la sugerida en el enunciado, con dos decisiones propias: (a) se usan **7 LEDs**
 > (1 por contenedor monitoreado: track-server, 3 players y 3 robots) y (b) el broker MQTT corre dentro del contenedor `admin`.
 
 ### Direccionamiento
@@ -103,7 +103,7 @@ Cada contenedor instala rutas estáticas hacia las otras subredes vía `.254` (`
 ## 5. Puesta en marcha
 
 ```bash
-git clone <este-repo> && cd <este-repo>
+git clone https://github.com/mafer1608-7/Actividad-8.git && cd Actividad-8
 cp .env.example .env                      # edita DOCKERHUB_USER
 make up                                   # construye la base (compila pybullet, ~5 min la 1.ª vez) y levanta todo
 make test                                 # valida aislamiento y acceso del admin
@@ -164,6 +164,8 @@ mosquitto_sub -h localhost -t 'lab/status/#' -v     # ver el estado que verían 
 
 ## 7. Validación experimental
 
+> **Nota:** las mediciones de esta sección se obtuvieron con las **ESP32 virtuales** (`make emulate`, `tools/esp32_emulator.py`), que envían exactamente el mismo protocolo UDP que el firmware. El firmware de `firmware/` está escrito para el hardware real, pero no se probó físicamente.
+
 Todos los experimentos escriben en `data/metrics.csv`; cada uno se analiza con `python3 tools/analyze_metrics.py data/metrics.csv --since <ts> --until <ts>` (usa `date +%s` para anotar los tiempos). `--plot` genera gráficas en `data/`.
 
 | Exp. | Procedimiento | Resultado esperado |
@@ -207,17 +209,18 @@ make push          # sube lab-sim-base, lab-router, lab-admin, lab-track-server,
 
 | Imagen | Enlace |
 |---|---|
-| lab-sim-base | `https://hub.docker.com/r/<usuario>/lab-sim-base` |
-| lab-router | `https://hub.docker.com/r/<usuario>/lab-router` |
-| lab-admin | `https://hub.docker.com/r/<usuario>/lab-admin` |
-| lab-track-server | `https://hub.docker.com/r/<usuario>/lab-track-server` |
-| lab-player | `https://hub.docker.com/r/<usuario>/lab-player` |
-| lab-robot-sim | `https://hub.docker.com/r/<usuario>/lab-robot-sim` |
+| lab-sim-base | `https://hub.docker.com/r/mafepr08/lab-sim-base` |
+| lab-router | `https://hub.docker.com/r/mafepr08/lab-router` |
+| lab-admin | `https://hub.docker.com/r/mafepr08/lab-admin` |
+| lab-track-server | `https://hub.docker.com/r/mafepr08/lab-track-server` |
+| lab-player | `https://hub.docker.com/r/mafepr08/lab-player` |
+| lab-robot-sim | `https://hub.docker.com/r/mafepr08/lab-robot-sim` |
 
 ## 10. Limitaciones y trabajo futuro
 
 * Las VLAN son redes bridge aisladas (equivalente lógico); la variante 802.1Q con `macvlan` queda documentada pero no es la configuración por defecto.
 * Los modelos por defecto de Spot/NAO/Pepper son sustitutos de `pybullet_data`; los robots están con base fija para visualizar mejor el *real-to-sim* (`FIX_BASE=0` los libera).
+* El firmware no se probó en hardware real (no se dispuso de las placas); la validación se hizo con el emulador de ESP32.
 * Seguridad: broker MQTT anónimo y sin TLS (entorno de laboratorio). Mejora: usuarios/ACL en Mosquitto y TLS.
 * Bonus: enrutamiento dinámico con FRR en el router, política RL de rl-baselines3-zoo para los coches autónomos, Grafana sobre `metrics.csv`.
 
@@ -226,4 +229,4 @@ make push          # sube lab-sim-base, lab-router, lab-admin, lab-track-server,
 - [ ] Repositorio GitHub con este README, código, firmware y `docker-compose.yml`
 - [ ] Imágenes subidas a Docker Hub (enlaces en la sección 9)
 - [ ] Resultados de la sección 7 completados con capturas/gráficas
-- [ ] Video de la práctica funcionando y explicada paso a paso (enlace al inicio del README)
+- [ ] Video de la práctica (no se realizó por no contar con las ESP32 físicas; la sección 6 documenta el funcionamiento paso a paso)
