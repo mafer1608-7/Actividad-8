@@ -325,16 +325,6 @@ No son mediciones: se deducen de los umbrales configurados (latencia superior a 
 | E3 Jitter y pérdida | player-1 | Jitter de hasta 80 ms y 10 % de paquetes perdidos | `DEGRADED` (jitter alto) | Parpadeo lento |
 | E4 Disponibilidad | sim-spot | Contenedor detenido | `DOWN`, y `UP` al reiniciarlo | Apagado, luego fijo |
 
-### 7.3 Resultados medidos
-
-_Pendiente de ejecutar los experimentos de la sección 7.2. Se completa con la salida del análisis de métricas (RTT, jitter y disponibilidad por contenedor)._
-
-| Experimento | Contenedor | RTT medio (ms) | RTT p95 (ms) | Jitter medio (ms) | Disponibilidad (%) | Estado observado |
-|---|---|---|---|---|---|---|
-| E1 | player-1 | | | | | |
-| E2 | sim-nao | | | | | |
-| E3 | player-1 | | | | | |
-| E4 | sim-spot | | | | | |
 
 ### 7.4 Posibles mejoras
 
